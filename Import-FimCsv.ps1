@@ -14,37 +14,152 @@
     Author      : SCGriffiths (Oxford Computer Group)
     Requires    : PowerShell v2
                   Microsoft PowerShell cmdlets in FIMPowerShell.ps1 (https://technet.microsoft.com/en-us/library/ff720152(v=ws.10).aspx)
+				  which needs some minor modification to the GetResource function to use -OnlyBaseResources when calling Export-FIMConfig
 
 .EXAMPLE
-    Import-FimCsv -File NewUsers.txt
+	The following example creates Person objects from the import file NewUsers.txt. The
+	header of the import file must contain the system name of the FIM attribute to be imported.
+	Reference (Manager) and multi-valued (ProxyAddressCollection) attributes are also
+	illustrated in the sample input file.
+
+	NewUsers.txt
+	------------
+	EmployeeID,FirstName,LastName,Manager,ProxyAddressCollection
+	100123,Alice,Roberts,(Person|EmployeeID|757011),SMTP:alice@acme.com;smtp:alice.roberts@acmecorp.com
+
+    Import-FimCsv -File NewUsers.txt -ObjectType Person -State Create
+
+.EXAMPLE
+	The following example creates Person objects from the import file NewUsers.txt and
+	includes the State as a column header rather than as a parameter:
+
+	NewUsers.txt
+	------------
+	!State,EmployeeID,DisplayName,FirstName,LastName
+	Create,100123,Alice Roberts,Alice,Roberts
+
+	Import-FimCsv -File NewUsers.txt -ObjectType Person
+
+.EXAMPLE
+	The following example deletes Person objects identified in the import file OldUsers.txt.
+	The Person objects to be deleted are identified through the MatchAttribute parameter. A 
+	single match is required for the object to be deleted.
+
+	OldUsers.txt
+	------------
+	EmployeeID,FirstName,LastName
+	7001345,Bob,Jones
+	8561120,Charlie,Smith
+
+	Import-FimCsv -File OldUsers.txt -ObjectType Person -State Delete -MatchAttribute EmployeeID
+
+.EXAMPLE
+	The following example modifies the Person objects identified in the import file
+	UpdatedUsers.txt. The Person objects to be modified are identified through the MatchAttribute
+	parameter. A single match is required for the object to be updated.
+
+	UpdatedUsers.txt
+	----------------
+	EmployeeID,FirstName,LastName,Manager
+	100123,Alex,Robins,(Person|EmployeeID|977541)
+
+	Import-FimCsv -File UpdatedUsers.txt -ObjectType Person -State Put -MatchAttribute EmployeeID
 
 .PARAMETER File
     Identifies the import file
+
+.PARAMETER Delimiter
+	Identifies the field separator for the attributes represented in the import file.
+
+	The default is a comma (,).
     
+.PARAMETER MVDelimiter
+	Identifies the separator within a field that represents a multi-valued attribute.
+
+	The default is a semi-colon (;).
+
+.PARAMETER
+	Identifies the separator within a field that represents a reference attribute.
+
+	The default is the pipe symbol (|).
+	
+	The format of a field representing a reference attribute is (ObjectType|Attribute|Value).
+
+.PARAMETER ObjectType
+	Identifies the type of object represented in the import file.
+
+	The default is Person.
+
+.PARAMETER State
+	Identifies the type of activity to be performed and is one of Create, Put, or Delete
+
+	If the header of the import file contains a column called !State, the value in this
+	column is used instead of that provided by this parameter. This is to allow create,
+	update and delete activities to be included in the same import file.
+
+.PARAMETER Operation
+	Identifies the type of operation to be performed and is one of Add, Replace, or Delete.
+
+	The Operation parameter only needs to be specified when modifying a	multi-valued
+	attribute (State = Put) and must be either Add (to add to the list) or Delete (to
+	remove from the list).
+
+	The default is Replace and is used for all single-valued attributes.
+
+.PARAMETER MatchAttribute
+	Identifies the attribute to use when locating an object to update or delete
+
+.PARAMETER Uri
+	Identifies the URI of the FIM Service
+
+	The default is http://localhost:5725
+
+.PARAMETER UseCachedSchema
+	Indicates that a saved copy of the schema for the object type indicated by the ObjectType
+	parameter should be used instead of querying FIM for it. NOT IMPLEMENTED
+
+.TODO
+	- Include a !MatchParameter special attribute to allow the attribute used in matching for
+	  Put and Delete activities to be specified on an object by object basis
+	- Add schema cache. Maybe consider always using the cache if available and replacing the
+	  UseCachedSchema switch with IgnoreCachedSchema and RefreshCachedSchema switches
+	- Add option to test for uniqueness on create, e.g. -CheckUniqueAttribute DisplayName will
+	  look for any object of the same type with a matching DisplayName. Not that the named
+	  attribute must be checked against the object schema
+	- Allow delete of multiple objects based on filter. Could set a delete limit.
+	- Allow update of multiple objects based on filter. Probably a really bad idea!
+	- Test bad data representation
+	- Test multiple rows
+	- Add more examples including the use of Operation when modifying multi-valued attributes
+
 
 #>
 
 [CmdletBinding()]
 PARAM
 (
-    [parameter(Mandatory=$false, Position=0)] [string] $File = 'C:\FIMProject\Work\Default.txt'
+    [parameter(Mandatory=$false, Position=0)] [string] $File = 'C:\FIMProject\Work\ModifyAll.txt'
    ,[parameter(Mandatory=$false)]             [string] $Delimiter = ','
    ,[parameter(Mandatory=$false)]             [string] $MVDelimiter = ';'
+   ,[parameter(Mandatory=$false)]             [string] $RefDelimiter = '|'
    ,[parameter(Mandatory=$false)]             [string] $ObjectType = 'Fruit'
-   ,[parameter(Mandatory=$false)]             [string] $State = 'Create'
-   ,[parameter(Mandatory=$false)]             [string] $Operation = 'None'
-   ,[parameter(Mandatory=$false)]             [string] $MatchAttribute = 'IntegerValue'
-   ,[parameter(Mandatory=$false)]             [string] $Uri = 'http://localhost:5725'
+   ,[parameter(Mandatory=$false)]             [string] $State = 'None'
+   ,[parameter(Mandatory=$false)]             [string] $Operation = 'Replace'
+   ,[parameter(Mandatory=$false)]             [string] $MatchAttribute = 'None'
+   ,[parameter(Mandatory=$false)]             [string] $Uri = 'http://srv.corp.contoso.com:5725'
    ,[parameter(Mandatory=$false)]             [switch] $UseCachedSchema = $false
    ,[parameter(Mandatory=$false)]             [string] $MSPSCmdletScript = 'FIMPowerShell.ps1'
 
 )
 
-Set-Variable DEFINED_IN_FILE -Value '#File'
-Set-Variable SPECIAL_ATTRIBUTES_LIST -Value '!ObjectType,!State,!Operation'
-Set-Variable SPECIAL_ATTRIBUTE_OBJECT_TYPE -Value '!ObjectType'
+Set-Variable SPECIAL_ATTRIBUTES_LIST -Value '!State,!Operation'
 Set-Variable SPECIAL_ATTRIBUTE_STATE -Value '!State'
 Set-Variable SPECIAL_ATTRIBUTE_OPERATION -Value '!Operation'
+
+Set-Variable OPERATION_ADD -Value 'Add'
+Set-Variable OPERATION_DELETE -Value 'Delete'
+Set-Variable OPERATION_REPLACE -Value 'Replace'
+Set-Variable OPERATION_NONE -Value 'None'
 
 
 if (-not(Test-Path $File)) {
@@ -66,7 +181,7 @@ else
 
 # F U N C T I O N S
 
-function Convert-FimExportToPSObject 
+function Convert-FimExportToPSObject
 { 
     PARAM 
     ( 
@@ -76,24 +191,24 @@ function Convert-FimExportToPSObject
     )
     
     PROCESS
-    {         
-        $psObject = New-Object PSObject 
-        $ExportObject.ResourceManagementObject.ResourceManagementAttributes | ForEach-Object{ 
-            if ($_.Value -ne $null) 
-            { 
-                $value = $_.Value 
-            } 
-            elseif($_.Values -ne $null) 
-            { 
-                $value = $_.Values 
-            } 
-            else 
-            { 
-                $value = $null 
-            } 
-            $psObject | Add-Member -MemberType NoteProperty -Name $_.AttributeName -Value $value 
-        } 
-        Write-Output $psObject 
+    { 
+		$psObject = New-Object PSObject 
+		$ExportObject.ResourceManagementObject.ResourceManagementAttributes | ForEach-Object { 
+			if ($_.Value -ne $null) 
+			{ 
+				$value = $_.Value 
+			} 
+			elseif($_.Values -ne $null) 
+			{ 
+				$value = $_.Values 
+			} 
+			else 
+			{ 
+				$value = $null 
+			} 
+			$psObject | Add-Member -MemberType NoteProperty -Name $_.AttributeName -Value $value 
+		} 
+		Write-Output $psObject 
     } 
 }
 
@@ -112,14 +227,14 @@ function GetFileHeader
 
 function GetObjectSchema
 {
-    $schema = GetSpecialObjectSchema
+    $schema  = GetSpecialObjectSchema
     $schema += GetFimObjectSchema
     $schema
 }
 
 function GetSpecialObjectSchema
 {
-    $templateProperties = @{DataType='String'; Multivalued='$false'}
+    $templateProperties = @{DataType='String'; Multivalued='False'}
     $attributeTemplate = New-Object -TypeName PSObject -Property $templateProperties
     $schema = @{}
     
@@ -137,17 +252,14 @@ function GetFimObjectSchema
     $attributeTemplate = New-Object -TypeName PSObject -Property $templateProperties
     $schema = @{}
     
-    if (-not($ObjectType -eq $DEFINED_IN_FILE)) {
-    
-        foreach ($attribute in GetObjectAttributes) {
-            $thisAttribute = $attributeTemplate.PSObject.Copy()
-            $thisAttribute.DataType = $attribute.DataType
-            $thisAttribute.Multivalued = $attribute.Multivalued
-            $schema.Add("$($attribute.Name)", $thisAttribute)
-        }
-        
-        $schema
+    foreach ($attribute in GetObjectAttributes) {
+        $thisAttribute = $attributeTemplate.PSObject.Copy()
+        $thisAttribute.DataType = $attribute.DataType
+        $thisAttribute.Multivalued = $attribute.Multivalued
+        $schema.Add("$($attribute.Name)", $thisAttribute)
     }
+        
+    $schema
 }
 
 function GetObjectAttributes
@@ -185,7 +297,6 @@ function ProcessFile
 
 function ProcessRow([PSCustomObject] $row)
 {
-    $rowObject = GetObjectType $row
     $rowState = GetState $row
     $rowOperation = GetOperation $row
         
@@ -193,16 +304,7 @@ function ProcessRow([PSCustomObject] $row)
         create {CreateFIMObject $row}
         delete {DeleteFIMObject $row}
         put {ModifyFIMObject $row}
-        default {throw "Unknown object state: $rowState"}
-    }
-}
-
-function GetObjectType([PSCustomObject] $row)
-{
-    if ($fileAttributes -contains $SPECIAL_ATTRIBUTE_OBJECT_TYPE) {
-        $row."$SPECIAL_ATTRIBUTE_OBJECT_TYPE"
-    } else {
-        $ObjectType
+        default {throw "Unknown object state: $rowState`nUse the -State parameter to specify one of Create, Put or Delete"}
     }
 }
 
@@ -224,24 +326,15 @@ function GetOperation([PSCustomObject] $row)
     }
 }
 
+# C R E A T E   R E G I O N
+
 function CreateFIMObject([PSCustomObject] $row)
 {
-    $object = CreateImportObject -ObjectType $rowObject
+    $Operation = 'Add'
+	$object = CreateImportObject -ObjectType $ObjectType
  
-    <# - Associated functions are incomplete. Need to finish functions that manage reference types
     foreach ($attribute in $row.PSObject.Properties) {
         AddAttributesToObject $attribute $object
-    }
-    #>
-    
-    foreach ($attribute in $row.PSObject.Properties) {
-        if ($schemaAttributes."$($attribute.Name)".Multivalued -eq $false -and (-not($attribute.Name.StartsWith('!')))) {
-            SetSingleValue $object $attribute.Name $row."$($attribute.Name)"
-        } elseif ($schemaAttributes."$($attribute.Name)".Multivalued -eq $true -and (-not($attribute.Name.StartsWith('!')))) {
-            foreach ($mvAttribute in $attribute.Value.Split($MVDelimiter)) {
-                AddMultiValue $object $attribute.Name $mvAttribute
-            }
-        }
     }
     
     $object | Import-FIMConfig -Uri $Uri
@@ -249,48 +342,112 @@ function CreateFIMObject([PSCustomObject] $row)
 
 function AddAttributesToObject($attribute, $object)
 {
-    if ($schemaAttributes."$($attribute.Name)".Multivalued -eq $false) {
-        AddSVAttributeToObject $object $attribute.Name $attribute.value
-    } elseif ($schemaAttributes."$($attribute.Name)".Multivalued -eq $true) {
-        AddMVAttributeToObject $object $attribute.Name $attribute.Value
-    }
+	$isSpecialAttribute = ($attribute.Name.StartsWith('!'))
+	$isPresent = (-not [string]::IsNullOrEmpty($attribute.Value))
+
+	if (-not $isSpecialAttribute -and $isPresent) {
+		$isMultiValued = ($schemaAttributes."$($attribute.Name)".Multivalued -eq 'True')
+	
+		if ($isMultiValued) {
+	        AddMultivaluedAttributeToObject $object $attribute.Name $attribute.Value
+	    } else {
+			AddSinglevaluedAttributeToObject $object $attribute.Name $attribute.Value
+		}
+	}
 }
 
-function AddSVAttributeToObject($object, $attributeName, $attributeValue)
+function AddMultivaluedAttributeToObject($object, $attributeName, $attributeValue)
 {
-    if ($schemaAttributes."$attributeName".DataType -eq 'Reference') {
-        AddSVReferenceAttributeToObject $object $attributeName $attributeValue
+    $isReferenceType = ($schemaAttributes."$attributeName".DataType -eq 'Reference')
+
+	if ($isReferenceType) {
+        AddMultivaluedReferenceAttributeToObject $object $attributeName $attributeValue
     } else {
-        AddSVSimpleAttributeToObject $object $attributeName $attributeValue
+        AddMultivaluedSimpleAttributeToObject $object $attributeName $attributeValue
     }
 }
 
-function AddSVReferenceValueToObject($object, $attributeName, $attributeValue)
+function AddMultivaluedReferenceAttributeToObject($ObjectType, $attributeName, $attributeValue)
 {
-    $referenceData = @($attributeValue.Split($MVDelimeter))
-    if ($referenceData.Count -ne 3) {
-        throw "Invalid representation of a reference type: $referenceData"
+	foreach ($mvAttributeValue in $attributeValue.Split($MVDelimiter)) {
+		if (IsValidReferenceRepresentation $mvAttributeValue) {
+			if ($Operation -eq $OPERATION_ADD) {
+				AddMultiValue $object $attributeName (QueryFIMResource (BuildFilter $mvAttributeValue))
+			} elseif ($Operation -eq $OPERATION_DELETE) {
+				RemoveMultiValue $object $attributeName (QueryFIMResource (BuildFilter $mvAttributeValue))
+			}
+		}
+	}
+}
+
+function AddMultivaluedSimpleAttributeToObject($ObjectType, $attributeName, $attributeValue)
+{
+	foreach ($mvAttributeValue in $attributeValue.Split($MVDelimiter)) {
+		if ($Operation -eq $OPERATION_ADD) {
+			AddMultiValue $object $attribute.Name $mvAttributeValue
+		} elseif ($Operation -eq $OPERATION_DELETE) {
+			RemoveMultiValue $object $attribute.Name $mvAttributeValue
+		}
+	}
+}
+
+function AddSinglevaluedAttributeToObject($object, $attributeName, $attributeValue)
+{
+    $isReferenceType = ($schemaAttributes."$attributeName".DataType -eq 'Reference')
+
+	if ($isReferenceType) {
+        AddSinglevaluedReferenceAttributeToObject $object $attributeName $attributeValue
+    } else {
+        AddSinglevaluedSimpleAttributeToObject $object $attributeName $attributeValue
     }
-    
-    $filter = "/{0}[{1}='{2}']" -f $referenceData[0], $referenceData[1], $referenceData[2],
+}
+
+function AddSinglevaluedReferenceAttributeToObject($object, $attributeName, $attributeValue)
+{
+    if (IsValidReferenceRepresentation $attributeValue) {
+		SetSingleValue $object $attributeName (QueryFIMResource (BuildFilter $attributeValue))
+	}
+}
+
+function IsValidReferenceRepresentation($attributeValue)
+{
+	$isValidRepresentation = ($attributeValue -match "^\((.+\$RefDelimiter){2}.+\)$")
+    if (-not $isValidRepresentation) {
+        throw "Invalid representation of a reference type: $attributeValue"
+    }
+
+	$isValidRepresentation
+}
+
+function BuildFilter($attributeValue)
+{
+	$referenceData = ($attributeValue -replace '\(|\)','').Split($RefDelimiter)
+    $filter = "/{0}[{1}='{2}']" -f $referenceData[0], $referenceData[1], $referenceData[2]
+	$filter
+}
+
+function QueryFIMResource($filter)
+{
     $referencedObject = @(QueryResource $filter $Uri)
     if ($referencedObject[0] -eq $null) {
         throw "Unable to find object for reference: $attributeValue"
     } elseif ($referencedObject.Count -eq 1) {
-        SetSingleValue $object $attributeName $referencedObject.ResourceManagementObject.ObjectIdentifier
+        $referencedObject.ResourceManagementObject.ObjectIdentifier
     } else {
         throw "Unable to set reference because > 1 object satisfies the criteria: $attributeValue"
     }
 }
 
-function AddSVSimpleAttributeToObject($object, $attributeName, $attributeValue)
+function AddSinglevaluedSimpleAttributeToObject($object, $attributeName, $attributeValue)
 {
     SetSingleValue $object $attributeName $attributeValue
 }
 
+# D E L E T E   R E G I O N
+
 function DeleteFIMObject([PSCustomObject] $row)
 {
-    $objectID = GetFIMObjectID $row $rowObject
+    $objectID = GetFIMObjectID $row $ObjectType
     if ($objectID -ne $null) {
         DeleteObject $objectID | Import-FIMConfig -Uri $Uri
     }
@@ -306,23 +463,34 @@ function GetFIMObjectID([PSCustomObject] $row)
     if ($MatchAttribute -eq 'ObjectID') {
         GetResource $row.ObjectID $Uri
     } else {
-        $filter = "/{0}[{1}='{2}']" -f $rowObject, $MatchAttribute, $row.$MatchAttribute
+        $filter = "/{0}[{1}='{2}']" -f $ObjectType, $MatchAttribute, $row.$MatchAttribute
         $result = @(QueryResource $filter $Uri)
         
         if ($result[0] -eq $null) {
-            Write-Verbose([string]((Get-Date -Format u) + " WARNING: Unable to delete object because object not found for MatchAttribute: $MatchAttribute"))
+            Write-Verbose([string]((Get-Date -Format u) + " WARNING: Object not found for MatchAttribute: $MatchAttribute = $($row.$MatchAttribute)"))
             $null
         } elseif ($result.Count -eq 1) {
             $result[0].ResourceManagementObject.ObjectIdentifier -replace 'urn:uuid:', ''
         } else {
-            Write-Verbose([string]((Get-Date -Format u) + " WARNING: Unable to delete object because > 1 object found for MatchAttribute: $MatchAttribute"))
+            Write-Verbose([string]((Get-Date -Format u) + " WARNING: > 1 object found for MatchAttribute: $MatchAttribute = $($row.$MatchAttribute)"))
             $null
         }
     }
 }
 
-function ModifyFIMObject
+# M O D I F Y   R E G I O N
+
+function ModifyFIMObject([PSCustomObject] $row)
 {
+	$objectID = GetFIMObjectID $row $ObjectType
+    if ($objectID -ne $null) {
+		$object = ModifyImportObject -TargetIdentifier $objectID -ObjectType $ObjectType
+	    foreach ($attribute in $row.PSObject.Properties) {
+			AddAttributesToObject $attribute $object
+		}
+    
+		$object | Import-FIMConfig -Uri $Uri
+	}
 }
 
 function CacheAttributeProperties
