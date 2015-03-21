@@ -131,6 +131,8 @@
 	- Test bad data representation
 	- Test multiple rows
 	- Add more examples including the use of Operation when modifying multi-valued attributes
+	- Add special attributes !AttributeName,!AttributeValue and !Action to allow more fine-grained
+	  updating abilities
 
 
 #>
@@ -330,7 +332,7 @@ function GetOperation([PSCustomObject] $row)
 
 function CreateFIMObject([PSCustomObject] $row)
 {
-    $Operation = 'Add'
+    $rowOperation = 'Add'
 	$object = CreateImportObject -ObjectType $ObjectType
  
     foreach ($attribute in $row.PSObject.Properties) {
@@ -371,9 +373,9 @@ function AddMultivaluedReferenceAttributeToObject($ObjectType, $attributeName, $
 {
 	foreach ($mvAttributeValue in $attributeValue.Split($MVDelimiter)) {
 		if (IsValidReferenceRepresentation $mvAttributeValue) {
-			if ($Operation -eq $OPERATION_ADD) {
+			if ($rowOperation -eq $OPERATION_ADD) {
 				AddMultiValue $object $attributeName (QueryFIMResource (BuildFilter $mvAttributeValue))
-			} elseif ($Operation -eq $OPERATION_DELETE) {
+			} elseif ($rowOperation -eq $OPERATION_DELETE) {
 				RemoveMultiValue $object $attributeName (QueryFIMResource (BuildFilter $mvAttributeValue))
 			}
 		}
@@ -383,9 +385,9 @@ function AddMultivaluedReferenceAttributeToObject($ObjectType, $attributeName, $
 function AddMultivaluedSimpleAttributeToObject($ObjectType, $attributeName, $attributeValue)
 {
 	foreach ($mvAttributeValue in $attributeValue.Split($MVDelimiter)) {
-		if ($Operation -eq $OPERATION_ADD) {
+		if ($rowOperation -eq $OPERATION_ADD) {
 			AddMultiValue $object $attribute.Name $mvAttributeValue
-		} elseif ($Operation -eq $OPERATION_DELETE) {
+		} elseif ($rowOperation -eq $OPERATION_DELETE) {
 			RemoveMultiValue $object $attribute.Name $mvAttributeValue
 		}
 	}
