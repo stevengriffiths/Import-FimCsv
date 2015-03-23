@@ -133,6 +133,29 @@
 	- Add more examples including the use of Operation when modifying multi-valued attributes
 	- Add special attributes !AttributeName,!AttributeValue and !Action to allow more fine-grained
 	  updating abilities
+	- Thoughts on empty strings, i.e. when no data is provided for a column, e.g. ...,data1,,data2,...
+	  Currently if a column entry contains no data, the attribute is ignored. However, having the
+	  capability to clear an attribute would be useful, but...how to differentiate between the example
+	  above meaning 'no data, do nothing' and 'no data, clear the attribute'? The Operation parameter
+	  is really an attribute-level directive, so some options:
+	  - Use the !Operation special column header to define how emply columns are treated on a row-by-row
+	    basis. OK, but might want to clear and ignore in the same row
+	  - Integrate the directive with the data, e.g. ...,data,<some directive>,data,... This provides
+	    fine-grained control, but if the data is being sourced from a spreadsheet, it may make the
+	    creation of the spreadsheet problematic. The directive approach could also be used for managing
+	    activities on multi-valied attributes, e.g. a prefix of + directs the script to add to the MV attribute,
+	    a prefix of - directs the script to remove from the MV attribute, while * directs the MV attribute
+	    to be cleared, which would require the current values to be read and removed in a loop
+	  - Clearing attributes and managing (specifically removing and clearing) MV attributes could be addressed
+	    using the alternative header format !Anchor,!Operation,!Attribute,!Value. This approach would leave the
+	    more open header format that uses attribute names to three basic activities and where an empty column
+	    means that the attribute is ignored: create object, delete object, modify object. The modify activity
+	    would treat all MV attributes as an Add operation. The processing pattern for the alternative header
+	    format is then:
+	    - Locate object via anchor
+	    - If one object returned, add/remove/replace/clear !Value to/from !Attribute
+	    - If zero or > 1 objects are returned, report, log and continue
+	     
 
 
 #>
@@ -196,21 +219,16 @@ function Convert-FimExportToPSObject
     { 
 		$psObject = New-Object PSObject 
 		$ExportObject.ResourceManagementObject.ResourceManagementAttributes | ForEach-Object { 
-			if ($_.Value -ne $null) 
-			{ 
+			if ($_.Value -ne $null) { 
 				$value = $_.Value 
-			} 
-			elseif($_.Values -ne $null) 
-			{ 
+			} elseif($_.Values -ne $null) { 
 				$value = $_.Values 
-			} 
-			else 
-			{ 
+			} else { 
 				$value = $null 
 			} 
 			$psObject | Add-Member -MemberType NoteProperty -Name $_.AttributeName -Value $value 
 		} 
-		Write-Output $psObject 
+		$psObject 
     } 
 }
 
@@ -300,7 +318,6 @@ function ProcessFile
 function ProcessRow([PSCustomObject] $row)
 {
     $rowState = GetState $row
-    $rowOperation = GetOperation $row
         
     switch ($rowState.ToLower()) {
         create {CreateFIMObject $row}
@@ -332,7 +349,6 @@ function GetOperation([PSCustomObject] $row)
 
 function CreateFIMObject([PSCustomObject] $row)
 {
-    $rowOperation = 'Add'
 	$object = CreateImportObject -ObjectType $ObjectType
  
     foreach ($attribute in $row.PSObject.Properties) {
@@ -373,11 +389,7 @@ function AddMultivaluedReferenceAttributeToObject($ObjectType, $attributeName, $
 {
 	foreach ($mvAttributeValue in $attributeValue.Split($MVDelimiter)) {
 		if (IsValidReferenceRepresentation $mvAttributeValue) {
-			if ($rowOperation -eq $OPERATION_ADD) {
-				AddMultiValue $object $attributeName (QueryFIMResource (BuildFilter $mvAttributeValue))
-			} elseif ($rowOperation -eq $OPERATION_DELETE) {
-				RemoveMultiValue $object $attributeName (QueryFIMResource (BuildFilter $mvAttributeValue))
-			}
+			AddMultiValue $object $attributeName (QueryFIMResource (BuildFilter $mvAttributeValue))
 		}
 	}
 }
@@ -385,11 +397,7 @@ function AddMultivaluedReferenceAttributeToObject($ObjectType, $attributeName, $
 function AddMultivaluedSimpleAttributeToObject($ObjectType, $attributeName, $attributeValue)
 {
 	foreach ($mvAttributeValue in $attributeValue.Split($MVDelimiter)) {
-		if ($rowOperation -eq $OPERATION_ADD) {
-			AddMultiValue $object $attribute.Name $mvAttributeValue
-		} elseif ($rowOperation -eq $OPERATION_DELETE) {
-			RemoveMultiValue $object $attribute.Name $mvAttributeValue
-		}
+		AddMultiValue $object $attribute.Name $mvAttributeValue
 	}
 }
 
